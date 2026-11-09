@@ -165,8 +165,9 @@ def normalize(product: dict, channel: str | None = None, category: str | None = 
         "end": coupon.get("discountEndDate"),
         "min_qty": int(coupon.get("minQtyDiscount") or 0),
         "image": _image(product),
-        "rating": product.get("averageRating") or 0,
-        "reviews": product.get("numberOfReviews") or 0,
+        # 強制轉為數字：這兩個值會直接寫進報表
+        "rating": float(product.get("averageRating") or 0),
+        "reviews": int(product.get("numberOfReviews") or 0),
         "in_stock": (product.get("stock") or {}).get("stockLevelStatus") != "outOfStock",
         "lower_price": "decal_LowerPrice" in decals,
     }

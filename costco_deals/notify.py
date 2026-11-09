@@ -12,7 +12,6 @@ from .common import (
     CH_ONLINE_ONLY,
     CH_SAME_PRICE,
     CH_WAREHOUSE,
-    CHANNEL_LABELS,
     md,
     money,
     pct_text,
@@ -24,12 +23,12 @@ from .store import FLAG_NEW_LOW
 USERNAME = "好市多特價快報"
 COLOR_RED = 0xE31837
 COLOR_BLUE = 0x005DAA
-COLOR_ORANGE = 0xF59E0B
 COLOR_GREEN = 0x16A34A
 
-# Discord 限制：單一 embed 說明 4096 字、單則訊息所有 embed 合計 6000 字、最多 10 個 embed
+# Discord 限制：單一 embed 說明 4096 字、單則訊息所有 embed 合計 6000 字
 _DESC_LIMIT = 3900
-_EMBEDS_PER_MESSAGE = 10
+# 商品名稱來自外部資料，一律不觸發 @提及
+_NO_MENTIONS = {"parse": []}
 _LEGEND = "🌐 網路獨家　🏬 線上賣場同價　🔥 歷史新低"
 
 
@@ -54,18 +53,6 @@ def _tags(deal: dict) -> str:
     if deal["flag"] == FLAG_NEW_LOW:
         tags += " 🔥"
     return tags
-
-
-def price_text(deal: dict) -> str:
-    if deal["channel"] == CH_WAREHOUSE:
-        return "價格請至賣場確認"
-    if deal["price"] is not None and deal["pct"]:
-        text = f"**{pct_text(deal['pct'])}** ~~{money(deal['original'])}~~ → **{money(deal['price'])}**"
-    else:
-        text = f"**折 {money(deal['discount'])}**（多規格，售價依款式）"
-    if deal["min_qty"] > 1:
-        text += f"（買 {deal['min_qty']} 件）"
-    return text
 
 
 def deal_line(deal: dict) -> str:
@@ -141,37 +128,11 @@ def _summary_embed(new: list[dict], all_deals: list[dict], first_run: bool, repo
     return embed
 
 
-def _watch_embed(deal: dict) -> dict:
-    lines = [price_text(deal)]
-    period = period_text(deal["start"], deal["end"])
-    if period:
-        lines.append(f"📅 {period}")
-    labels = [CHANNEL_LABELS[deal["channel"]]]
-    if deal["flag"] == FLAG_NEW_LOW:
-        labels.append("🔥 歷史新低")
-    elif deal["low_price"] is not None and deal["price"] is not None:
-        labels.append(f"歷史低價 {money(deal['low_price'])}（{deal['low_date']}）")
-    if not deal["in_stock"]:
-        labels.append("目前缺貨")
-    lines.append("｜".join(labels))
-    embed = {
-        "title": f"⭐ {deal['name']}"[:256],
-        "url": short_url(deal["code"]),
-        "description": "\n".join(lines),
-        "color": COLOR_ORANGE,
-        "footer": {"text": f"關注關鍵字：{deal['watch']}"},
-    }
-    if deal["image"]:
-        embed["thumbnail"] = {"url": deal["image"]}
-    return embed
-
-
 def build_messages(
     all_deals: list[dict],
     first_run: bool,
     report_url: str = "",
     top_n: int = 20,
-    max_watch_hits: int = 20,
 ) -> list[dict]:
     """依新上架的特價組出要送出的訊息清單；沒有新特價時回傳空清單。"""
     new = [d for d in all_deals if d["is_new"]]
@@ -212,20 +173,11 @@ def build_messages(
             "footer": {"text": "賣場獨家商品，官網未公開售價與折扣金額，實際優惠以賣場標示為準"},
         })
 
-    # 摘要類的 embed 各自一則訊息，避免超過單則 6000 字上限
-    messages = [{"username": USERNAME, "embeds": [embed]} for embed in embeds]
-
-    hits = _by_discount([d for d in new if d.get("watch")])
-    hits.sort(key=lambda d: not d["in_stock"])  # 有庫存的優先顯示
-    shown = hits[:max_watch_hits]
-    for index in range(0, len(shown), _EMBEDS_PER_MESSAGE):
-        chunk = shown[index:index + _EMBEDS_PER_MESSAGE]
-        message = {"username": USERNAME, "embeds": [_watch_embed(d) for d in chunk]}
-        if index == 0:
-            extra = f"（另有 {len(hits) - len(shown)} 項見完整報表）" if len(hits) > len(shown) else ""
-            message["content"] = f"⭐ **關注清單命中 {len(hits)} 項**{extra}"
-        messages.append(message)
-    return messages
+    # 每個 embed 各自一則訊息，避免超過單則 6000 字上限
+    return [
+        {"username": USERNAME, "allowed_mentions": _NO_MENTIONS, "embeds": [embed]}
+        for embed in embeds
+    ]
 
 
 def _request(webhook: str, payload: dict, attachment: tuple[str, bytes] | None) -> urllib.request.Request:
@@ -282,4 +234,4 @@ def send(webhook: str, messages: list[dict], attachment: tuple[str, bytes] | Non
 
 
 def send_text(webhook: str, text: str) -> None:
-    _post(webhook, {"username": USERNAME, "content": text})
+    _post(webhook, {"username": USERNAME, "allowed_mentions": _NO_MENTIONS, "content": text})

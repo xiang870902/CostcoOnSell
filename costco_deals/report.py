@@ -1,6 +1,7 @@
 """產生可搜尋、篩選、排序的單檔 HTML 彙整報表。"""
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 
@@ -30,7 +31,6 @@ def _row(deal: dict) -> dict:
         "lw": 1 if deal["lower_price"] else 0,
         "r": deal["rating"],
         "rv": deal["reviews"],
-        "w": deal.get("watch") or "",
     }
 
 
@@ -64,6 +64,7 @@ _TEMPLATE = r"""<!doctype html>
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font: 15px/1.5 "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
@@ -88,11 +89,31 @@ h1 span { color: var(--red); }
   max-width: 1280px; margin: 0 auto; padding: 10px 16px;
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
 }
-input[type=search], select {
+select {
   font: inherit; color: var(--text); background: var(--card);
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 0;
 }
-input[type=search] { flex: 1 1 220px; }
+.kw {
+  flex: 1 1 280px; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; cursor: text;
+}
+.kw:focus-within { border-color: var(--blue); }
+.kw input {
+  flex: 1 1 140px; min-width: 100px; border: 0; outline: 0; background: transparent;
+  color: var(--text); font: inherit; padding: 3px 2px;
+}
+#kwchips { display: contents; }
+.kwchip {
+  display: inline-flex; align-items: center; background: var(--chip); border-radius: 999px;
+  padding: 2px 2px 2px 10px; font-size: 13px; white-space: nowrap; max-width: 100%;
+}
+.kwchip span { overflow: hidden; text-overflow: ellipsis; }
+.kwchip button, .kwclear {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit;
+}
+.kwchip button { font-size: 16px; line-height: 1; padding: 2px 7px; border-radius: 999px; }
+.kwchip button:hover, .kwclear:hover { color: var(--red); }
+.kwclear { font-size: 13px; padding: 2px 4px; white-space: nowrap; }
 select { flex: 0 1 auto; max-width: 100%; }
 label.tog {
   display: inline-flex; align-items: center; gap: 6px; font-size: 14px;
@@ -126,7 +147,6 @@ main { max-width: 1280px; margin: 0 auto; padding: 16px; }
 .chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--chip); color: var(--muted); white-space: nowrap; }
 .chip.wh { color: var(--blue); }
 .chip.low { color: var(--green); font-weight: 600; }
-.chip.watch { color: var(--amber); font-weight: 600; }
 .name { font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
 .price { margin-top: auto; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
 .price b { font-size: 19px; color: var(--red); font-variant-numeric: tabular-nums; }
@@ -148,7 +168,11 @@ footer { max-width: 1280px; margin: 0 auto; padding: 8px 16px 40px; color: var(-
   <div class="tabs" id="tabs"></div>
 </header>
 <div class="bar"><div class="bar-in">
-  <input type="search" id="q" placeholder="搜尋商品名稱…" autocomplete="off">
+  <div class="kw" id="kw">
+    <span id="kwchips"></span>
+    <input type="text" id="q" autocomplete="off" enterkeyhint="done" aria-label="關鍵字篩選">
+    <button type="button" class="kwclear" id="kwclear" hidden>全部清除</button>
+  </div>
   <select id="cat" aria-label="分類"></select>
   <select id="sort" aria-label="排序">
     <option value="pct">折扣幅度高→低</option>
@@ -170,6 +194,8 @@ footer { max-width: 1280px; margin: 0 auto; padding: 8px 16px 40px; color: var(-
   <button class="more" id="more" hidden>顯示更多</button>
 </main>
 <footer>
+  關鍵字篩選：輸入後按 Enter 可加入多個關鍵字，商品名稱符合任一個就會顯示；同一個關鍵字內以空白分隔的字詞須同時出現。
+  關鍵字只儲存在這個瀏覽器。
   「賣場特價」為賣場獨家商品，官網未公開售價與折扣金額，實際優惠以賣場標示為準。
   「歷史低價」依本系統開始記錄後的特價價格判斷。價格與庫存以好市多官網及賣場為準。
 </footer>
@@ -185,7 +211,17 @@ const TABS = [
   ['warehouse', '賣場特價', d => d.ch === 'warehouse'],
 ];
 const PAGE = 240;
-const state = { tab: 'all', q: '', cat: '', sort: 'pct', onlyNew: false, onlyLow: false, onlyStock: false, limit: PAGE };
+const KEYWORDS_KEY = 'costco-deals-keywords';
+function loadKeywords() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEYWORDS_KEY) || '[]');
+    return Array.isArray(saved) ? saved.filter(k => typeof k === 'string' && k.trim()).slice(0, 50) : [];
+  } catch (e) { return []; }
+}
+function saveKeywords() {
+  try { localStorage.setItem(KEYWORDS_KEY, JSON.stringify(state.keywords)); } catch (e) {}
+}
+const state = { keywords: loadKeywords(), tab: 'all', q: '', cat: '', sort: 'pct', onlyNew: false, onlyLow: false, onlyStock: false, limit: PAGE };
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = v => '$' + Math.round(v).toLocaleString('en-US');
@@ -209,7 +245,6 @@ function card(d) {
   const chips = ['<span class="chip' + (d.ch === 'warehouse' ? ' wh' : '') + '">' + CH[d.ch] + '</span>'];
   if (d.f === 'new_low') chips.push('<span class="chip low">🔥 歷史新低</span>');
   else if (d.f === 'tie_low') chips.push('<span class="chip low">平歷史低價</span>');
-  if (d.w) chips.push('<span class="chip watch">⭐ 關注</span>');
   if (d.lw) chips.push('<span class="chip">最新降價</span>');
   if (d.mq > 1) chips.push('<span class="chip">買 ' + d.mq + ' 件</span>');
   if (!d.st) chips.push('<span class="chip">缺貨</span>');
@@ -246,14 +281,16 @@ const SORTS = {
 
 function filtered() {
   const tab = TABS.find(t => t[0] === state.tab)[2];
-  const words = state.q.toLowerCase().split(/\s+/).filter(Boolean);
+  // 每個關鍵字拆成須同時出現的字詞；輸入中的文字視為暫時的關鍵字
+  const groups = state.keywords.concat(state.q)
+    .map(k => k.toLowerCase().split(/\s+/).filter(Boolean)).filter(g => g.length);
   return DATA.filter(d =>
     tab(d) &&
     (!state.cat || d.cat === state.cat) &&
     (!state.onlyNew || d.nw) &&
     (!state.onlyLow || d.f) &&
     (!state.onlyStock || d.st) &&
-    words.every(w => d.n.toLowerCase().includes(w))
+    (!groups.length || groups.some(g => g.every(w => d.n.toLowerCase().includes(w))))
   ).sort(SORTS[state.sort]);
 }
 
@@ -283,7 +320,59 @@ DATA.forEach(d => { cats[d.cat] = (cats[d.cat] || 0) + 1; });
 $('cat').innerHTML = '<option value="">全部分類</option>' + Object.keys(cats).sort((a, b) => cats[b] - cats[a])
   .map(c => '<option value="' + esc(c) + '">' + esc(c) + '（' + cats[c] + '）</option>').join('');
 
-$('q').addEventListener('input', e => update({ q: e.target.value }));
+const SEPARATORS = /[,，、;；\n]+/;
+function renderKeywords() {
+  $('kwchips').innerHTML = state.keywords.map((k, i) =>
+    '<span class="kwchip"><span>' + esc(k) + '</span><button type="button" data-i="' + i + '" aria-label="移除 ' + esc(k) + '">×</button></span>'
+  ).join('');
+  $('kwclear').hidden = state.keywords.length < 2;
+  $('q').placeholder = state.keywords.length ? '再加一個關鍵字…' : '輸入關鍵字按 Enter，可加入多個（例如：衛生紙、咖啡豆）';
+}
+function addKeywords(text) {
+  text.split(SEPARATORS).map(k => k.trim().replace(/\s+/g, ' ')).filter(Boolean).forEach(k => {
+    if (state.keywords.length < 50 && !state.keywords.some(x => x.toLowerCase() === k.toLowerCase())) state.keywords.push(k);
+  });
+  saveKeywords();
+  renderKeywords();
+}
+function removeKeyword(index) {
+  state.keywords.splice(index, 1);
+  saveKeywords();
+  renderKeywords();
+  update({});
+}
+// 輸入或貼上含分隔符號的文字時，分隔符號前的部分直接成為關鍵字
+function onText() {
+  const input = $('q');
+  if (SEPARATORS.test(input.value)) {
+    const parts = input.value.split(SEPARATORS);
+    const rest = parts.pop();
+    addKeywords(parts.join(','));
+    input.value = rest.replace(/^\s+/, '');
+  }
+  update({ q: input.value });
+}
+$('q').addEventListener('input', e => { if (!e.isComposing) onText(); });
+$('q').addEventListener('compositionend', onText);
+$('q').addEventListener('keydown', e => {
+  if (e.isComposing || e.keyCode === 229) return;  // 輸入法選字中
+  const input = e.target;
+  if (e.key === 'Enter' && input.value.trim()) {
+    e.preventDefault();
+    addKeywords(input.value);
+    input.value = '';
+    update({ q: '' });
+  } else if (e.key === 'Backspace' && !input.value && state.keywords.length) {
+    removeKeyword(state.keywords.length - 1);
+  }
+});
+$('kw').addEventListener('click', e => {
+  const button = e.target.closest('.kwchip button');
+  if (button) removeKeyword(Number(button.dataset.i));
+  else if (e.target.id === 'kwclear') { state.keywords = []; saveKeywords(); renderKeywords(); update({}); }
+  $('q').focus();
+});
+renderKeywords();
 $('cat').addEventListener('change', e => update({ cat: e.target.value }));
 $('sort').addEventListener('change', e => update({ sort: e.target.value }));
 $('onlyNew').addEventListener('change', e => update({ onlyNew: e.target.checked }));
@@ -295,3 +384,6 @@ render();
 </body>
 </html>
 """
+
+# 報表版面的版本：版面有更新時，即使特價內容沒變也要重新產生報表
+TEMPLATE_VERSION = hashlib.sha1(_TEMPLATE.encode("utf-8")).hexdigest()[:8]

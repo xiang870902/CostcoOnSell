@@ -17,7 +17,7 @@ from pathlib import Path
 from . import notify, store
 from .common import CH_WAREHOUSE, now_tw
 from .fetcher import FetchError, fetch_all
-from .report import build_report
+from .report import TEMPLATE_VERSION, build_report
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = ROOT / "config.toml"
@@ -26,7 +26,7 @@ HISTORY_FILE = ROOT / "data" / "history.json"
 REPORT_FILE = ROOT / "docs" / "index.html"
 PREVIEW_DIR = ROOT / "out"
 
-DEFAULTS = {"watchlist": [], "top_n": 20, "max_watch_hits": 20, "attach_report": True}
+DEFAULTS = {"top_n": 20, "attach_report": True}
 
 
 def load_config() -> dict:
@@ -47,14 +47,6 @@ def load_dotenv() -> None:
         if line and not line.startswith("#") and "=" in line:
             key, value = line.split("=", 1)
             os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
-
-
-def match_watchlist(deals: list[dict], keywords: list[str]) -> None:
-    """商品中英文名稱包含任一關鍵字（不分大小寫）即視為命中。"""
-    lowered = [(k, k.lower()) for k in keywords if k.strip()]
-    for deal in deals:
-        text = f"{deal['name']} {deal['en']}".lower()
-        deal["watch"] = next((k for k, low in lowered if low in text), "")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -95,20 +87,14 @@ def main(argv: list[str] | None = None) -> int:
     history = store.load_json(HISTORY_FILE, {})
     first_run = store.mark_new(deals, state)
     store.apply_history(deals, history, now.strftime("%Y-%m-%d"))
-    match_watchlist(deals, config["watchlist"])
 
     new = [d for d in deals if d["is_new"]]
     warehouse = sum(d["channel"] == CH_WAREHOUSE for d in deals)
     print(f"目前特價 {len(deals)} 項（線上 {len(deals) - warehouse}、賣場 {warehouse}）")
-    print(
-        f"新上架 {len(new)} 項、歷史新低 {sum(d['flag'] == store.FLAG_NEW_LOW for d in new)} 項、"
-        f"關注清單命中 {sum(bool(d['watch']) for d in new)} 項"
-    )
+    print(f"新上架 {len(new)} 項、歷史新低 {sum(d['flag'] == store.FLAG_NEW_LOW for d in new)} 項")
 
     report_html = build_report(deals, now)
-    messages = notify.build_messages(
-        deals, first_run, report_url, config["top_n"], config["max_watch_hits"]
-    )
+    messages = notify.build_messages(deals, first_run, report_url, config["top_n"])
 
     if args.dry_run:
         PREVIEW_DIR.mkdir(exist_ok=True)
@@ -133,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("沒有新上架的特價，不推播")
 
-    digest = store.fingerprint(deals)
+    digest = f"{store.fingerprint(deals)}:{TEMPLATE_VERSION}"
     if digest != state.get("fingerprint") or not REPORT_FILE.exists():
         REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
         REPORT_FILE.write_text(report_html, encoding="utf-8", newline="\n")

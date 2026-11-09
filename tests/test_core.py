@@ -37,7 +37,7 @@ def api_product(code="165005", price=1079.0, base=1349.0, discount=270.0, decals
 
 def deal(**kwargs):
     item = normalize(api_product(**kwargs))
-    item.update(is_new=True, flag="", low_price=None, low_date="", watch="")
+    item.update(is_new=True, flag="", low_price=None, low_date="")
     return item
 
 
@@ -51,6 +51,12 @@ class NormalizeTest(unittest.TestCase):
 
     def test_original_falls_back_to_price_plus_discount(self):
         self.assertEqual(normalize(api_product(base=None))["original"], 1349.0)
+
+    def test_rating_and_reviews_are_coerced_to_numbers(self):
+        item = normalize(api_product(averageRating="4.5", numberOfReviews="12"))
+        self.assertEqual((item["rating"], item["reviews"]), (4.5, 12))
+        with self.assertRaises(ValueError):
+            normalize(api_product(numberOfReviews="<img src=x onerror=alert(1)>"))
 
     def test_multi_variant_has_no_price(self):
         item = normalize(api_product(price=None, base=None))
@@ -141,12 +147,12 @@ class NotifyTest(unittest.TestCase):
         deals = []
         for index in range(400):
             item = deal(code=str(100000 + index), price=1000.0 + index, base=2000.0 + index, discount=1000.0)
-            item["watch"] = "紙尿褲" if index % 3 == 0 else ""
             deals.append(item)
-        messages = notify.build_messages(deals, True, "https://example.com/", top_n=60, max_watch_hits=25)
-        self.assertGreater(len(messages), 2)
+        messages = notify.build_messages(deals, True, "https://example.com/", top_n=60)
+        self.assertEqual(len(messages), 2)
         for message in messages:
-            self.assertLessEqual(len(message["embeds"]), 10)
+            self.assertEqual(len(message["embeds"]), 1)
+            self.assertEqual(message["allowed_mentions"], {"parse": []})
             total = 0
             for embed in message["embeds"]:
                 self.assertLessEqual(len(embed.get("description", "")), 4096)
@@ -155,8 +161,6 @@ class NotifyTest(unittest.TestCase):
                 total += len((embed.get("footer") or {}).get("text", ""))
                 total += sum(len(f["name"]) + len(f["value"]) for f in embed.get("fields", []))
             self.assertLessEqual(total, 6000)
-        watch_embeds = sum(len(m["embeds"]) for m in messages if m["embeds"][0]["title"].startswith("⭐"))
-        self.assertEqual(watch_embeds, 25)
 
 
 class ReportTest(unittest.TestCase):
